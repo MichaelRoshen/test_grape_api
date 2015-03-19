@@ -1,3 +1,269 @@
+One Grape API
+
+Troy June 7, 2014 0
+In this walk-thru, we will show you how to use rails, grape, and swagger to create a versioned API that includes parameter validation, json and XML data, automatically generated documentation with very little code.  You will see that adding additional APIs is quite easy – you get to focus on the code that is unique, not a lot of boiler plate stuff.
+
+Introducing Grape
+
+From grape’s github page:
+
+Grape is a REST-like API micro-framework for Ruby. It’s designed to run on Rack or complement existing web application frameworks such as Rails and Sinatra by providing a simple DSL to easily develop RESTful APIs. It has built-in support for common conventions, including multiple formats, subdomain/prefix restriction, content negotiation, versioning and much more.
+
+Where We’re Headed
+
+We are going to use Rails to “host” our API. URLs will be prefixed with api/v0.1/, but can be easily changed to suit your needs.  We will create an API that exposes a MusicStore model, allowing us to create, read, update and delete stores as well as rate them.
+
+With this API, I could, for example, write a mobile app that can uses the API to create, read, update, delete and rate music stores, and the data could be shared with users of the app. Here’s the API we’re going to create:
+
+     GET /music_stores
+     GET /music_stores/1
+     POST /music_stores/1  {name:”Monte’s Music”, address:”123 E Main Street”, lat:1.23, lon:2.34, stars:4}
+     PUT /music_stores {stars:5}
+     DELETE /music_stores/1
+     POST /music_stores/1/rate/5
+In addition, we will integrate Swagger-UI so we get automatic online documentation with an API playground so we can try stuff out.  Trust me, it’s cool.
+
+Setting Up Rails and Grape
+
+First, let’s spend a few minutes on the command line to set up a new rails app and the grape gem – we’re using Rails 4.1.
+Execute these on the command line:
+
+# Build the rails app
+rails new music_stores_api --skip-bundle
+cd music_stores_api
+
+# Add the grape gem and run bundler
+echo "gem 'grape' # API Framework" >> Gemfile
+bundle install
+
+# Add the MusicStore model that we'll use to hold data about each store
+bin/rails g model MusicStore name address lat:float lon:float stars:integer
+bin/rake db:migrate
+
+# While we're here, let's create up some files we need a bit later
+mkdir app/api
+touch app/api/api.rb
+mkdir -p app/api/music/
+touch app/api/music/store.rb
+Now we need to integrate the grape gem settings.
+Modify application.rb so that rails knows where to find our code:
+
+  module MusicStoresApi
+    class Application < Rails::Application
+
+      # For grape (API)
+      config.paths.add File.join('app', 'api'), glob: File.join('**', '*.rb')
+      config.autoload_paths += Dir[Rails.root.join('app', 'api', '*')]
+
+    end
+  end
+Modify config/routes.rb to hook up the API:
+
+Rails.application.routes.draw do
+  mount API =>'/'
+end
+The API
+
+Ok, let’s get the API code framework in place – edit app/api/music/store.rb and add a module and class Music::Store that we’ll use to access the model:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      ##
+      ## API code will go here
+      ##
+
+    end
+  end
+end
+Now, edit app/api/api.rb to indicate that we are prefixing our calls with api/v0.1/ and mount the Music::Store class:
+
+class API < Grape::API
+  prefix 'api'
+  version 'v0.1', using: :path
+
+  rescue_from ActiveRecord::RecordNotFound do |e|
+    Rack::Response.new({
+      error_code: 404,
+      error_message: e.message
+      }.to_json, 404).finish
+  end
+
+  rescue_from :all do |e|
+    Rack::Response.new({
+      error_code: 500,
+      error_message: e.message
+      }.to_json, 500).finish
+  end
+
+  mount Music::Store
+end
+At this point, we have everything “wired up” and all that’s left is to write some APIs. Edit app/api/music/store.rb again.
+
+First, we want to access all of the music stores. This is pretty basic – it doesn’t take any parameters and returns an array of stores. This will be accessible by doing a GET /api/v0.1/music_stores.json:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      desc "List all music stores"
+      get do
+        MusicStore.all
+      end
+After that, we’ll add an API to create a store. Here, we require a name and accept other optional values. It is called as POST – POST /app/api/v0.1/music_stores with form field values in the body:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      desc "Create a music store"
+      params do
+        requires :name, type: String, desc: "Store name"
+        optional :address, type: String, desc: "Store address"
+        optional :lat, type: Float, desc: "Store latitude"
+        optional :lon, type: Float, desc: "Store longitude"
+        optional :stars, type: Integer, regexp: /^[0-5]$/, desc: "Store rating (0-5)"
+      end
+      post do
+        MusicStore.create!({
+          name:params[:name],
+          address:params[:address],
+          lat:params[:lat],
+          lon:params[:lon],
+          stars:params[:stars]
+        })
+      end
+Here’s the API for updating a store’s rating:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      desc "Update a music store"
+      params do
+        requires :id, type: String, desc: "Store ID"
+        requires :stars, type: Integer, regexp: /^[0-5]$/, desc: "Store rating"
+      end
+      put ':id' do
+        MusicStore.find(params[:id]).update({
+          stars:params[:stars]
+        })
+      end
+The API for deleting a store:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      desc "Delete a music store"
+      params do
+        requires :id, type: String, desc: "Store ID"
+      end
+      delete ':id' do
+        MusicStore.find(params[:id]).destroy!
+      end
+Just for fun, here’s an API strictly for rating the store. It’s accessed at POST /api/v0.1/:id/rate/:stars:
+
+module Music
+  class Store < Grape::API
+    resource :music_stores do
+
+      desc "Rate the store"
+      params do
+        requires :id, type: String, desc: "Store ID"
+        requires :stars, type: Integer, regexp: /^[0-5]$/, desc: "Store rating"
+      end
+      put ':id/rate/:stars' do
+        MusicStore.find(params[:id]).update({
+          stars:params[:stars]
+        })
+      end
+Trying it Out
+
+At this point, we can use curl to test out the API from the command line. Fire up the rails environs in one shell:
+
+bin/rails s
+In another shell, run these curl commands to add a store and then fetch it in a json array and then an XML array:
+
+curl localhost:3000/api/v0.1/music_stores.json -d "name=Ziggie's%20Music"
+# {"id":1,"name":"Ziggie's Music","address":null,"lat":null,"lon":null,"stars":null,"created_at":"2014-06-08T02:57:02.798Z","updated_at":"2014-06-08T02:57:02.798Z"}
+
+curl localhost:3000/api/v0.1/music_stores.json
+# [{"id":1,"name":"Ziggie's Music","address":null,"lat":null,"lon":null,"stars":null,"created_at":"2014-06-08T02:57:02.798Z","updated_at":"2014-06-08T02:57:02.798Z"}]
+
+curl localhost:3000/api/v0.1/music_stores.xml
+# <?xml version="1.0" encoding="UTF-8"?>
+# <music-stores type="array">
+#   <music-store>
+#     <id type="integer">1</id>
+#     <name>Ziggie's Music</name>
+#     <address nil="true"/>
+#     <lat type="float" nil="true"/>
+#     <lon type="float" nil="true"/>
+#     <stars type="integer" nil="true"/>
+#     <created-at type="dateTime">2014-06-08T02:57:02Z</created-at>
+#     <updated-at type="dateTime">2014-06-08T02:57:02Z</updated-at>
+#   </music-store>
+# </music-stores>
+Yeah, but curl is such a pain. Enter swagger!
+
+Introducing swagger-ui
+
+From swagger-ui‘s github page
+
+Swagger-ui is part of Swagger project. The Swagger project allows you to produce, visualize and consume your OWN RESTful services. No proxy or 3rd party services required. Do it your own way.
+
+Let’s hook it up.
+
+Back on the command line:
+
+cd /path/to/music_store_api  # rails root
+echo "gem 'grape-swagger' # API docs" >> Gemfile
+echo "gem 'swagger-ui_rails' # API docs hosting" >> Gemfile
+bundle install
+Add to your application.js
+
+//= require swagger-ui
+Add to your application.css
+
+*= require swagger-ui
+We need a controller and a view so we can view the docs online:
+
+echo "class DocsController < ApplicationController" > app/controllers/docs_controller.rb
+echo "end" >> app/controllers/docs_controller.rb
+
+mkdir -p app/views/docs
+
+echo "<%= render 'swagger_ui/swagger_ui', discovery_url: '/api/v0.1/docs.json' %>" > app/views/docs/index.html.erb
+Modify api/api.rb:
+
+  add_swagger_documentation api_version:'v0.1', mount_path: "/docs", markdown:true unless Rails.env.production?
+end
+Finally, modify config/routes.rb to hook up the docs:
+
+Rails.application.routes.draw do
+  mount API =>'/'
+  get "/docs" => 'docs#index'
+end
+Now, start (restart) the rails app and visit the docs url: localhost:3000/docs:
+
+api-docs
+
+ 
+
+Not only can you see the API and descriptions, but you drill down for more info and actually try them out!
+
+api-store-list
+
+Enjoy!
+
+
+
+
+
+
+
 ![grape logo](https://github.com/intridea/grape/wiki/grape_logo.png)
 
 ## What is Grape?
